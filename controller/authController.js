@@ -1,328 +1,209 @@
-import bcrypt from "bcryptjs";
+import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { executeQuery } from "../config/db.js";
+import { db } from "../config/db.js";
 
-// 🔹 Helper function untuk generate JWT token
-const generateToken = (userId, role) => {
-  return jwt.sign(
-    { userId, role },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
-};
 
-// 🔹 Register User
 export const register = async (req, res) => {
   try {
     const { 
-      name, 
-      email, 
-      password, 
-      role = "user", 
-      companyId, 
-      phone 
+      name, nik, password, role, 
+      birth_place, birth_date, gender, company_id,
+      company_name, address, lon, lat, valid_radius_m,
+      profile_photo_url 
     } = req.body;
 
-    // Validasi input
-    if (!name || !email || !password) {
-      return res.status(400).json({ 
-        msg: "Name, email, and password are required" 
-      });
+    console.log("📥 Data registrasi diterima:", req.body);
+
+   
+    if (!name || !nik || !password || !role) {
+      return res.status(400).json({ msg: "Nama, NIK, password, dan role wajib diisi" });
     }
 
-    // Validasi email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ 
-        msg: "Invalid email format" 
-      });
+    
+    if (!["hr", "karyawan"].includes(role)) {
+      return res.status(400).json({ msg: "Role harus 'hr' atau 'karyawan'" });
     }
 
-    // Validasi password length
-    if (password.length < 6) {
-      return res.status(400).json({ 
-        msg: "Password must be at least 6 characters" 
+    let finalCompanyId = company_id;
+
+   
+    if (role === "hr") {
+      if (!company_name || lon === undefined || lat === undefined) {
+        console.log("❌ Data perusahaan tidak lengkap:", { company_name, lon, lat });
+        return res.status(400).json({ 
+          msg: "HR harus mengisi nama perusahaan dan lokasi (lon, lat)" 
+        });
+      }
+
+      const longitude = parseFloat(lon);
+      const latitude = parseFloat(lat);
+
+      if (isNaN(longitude) || isNaN(latitude)) {
+        return res.status(400).json({ msg: "Longitude dan Latitude harus berupa angka valid" });
+      }
+
+      console.log("🏢 Membuat perusahaan baru:", { 
+        company_name, 
+        address: address || "", 
+        lon: longitude, 
+        lat: latitude,
+        valid_radius_m: valid_radius_m || 100
       });
+
+      
+      const [companyResult] = await db.query(`
+        INSERT INTO companies (name, address, location, valid_radius_m)
+        VALUES (?, ?, ST_SRID(POINT(?, ?), 4326), ?)
+      `, [
+        company_name, 
+        address || "", 
+        longitude,  
+        latitude,   
+        valid_radius_m || 100
+      ]);
+
+      finalCompanyId = companyResult.insertId;
+      console.log("✅ Perusahaan dibuat dengan ID:", finalCompanyId);
+
+      
+      const [verifyCompany] = await db.query(`
+        SELECT id, name, 
+               ST_X(location) AS lon, 
+               ST_Y(location) AS lat,
+               valid_radius_m
+        FROM companies 
+        WHERE id = ?
+      `, [finalCompanyId]);
+
+      console.log("✅ Verifikasi data perusahaan:", verifyCompany[0]);
     }
 
-    // Cek apakah email sudah terdaftar
-    const existingUser = await executeQuery(
-      "SELECT id FROM users WHERE email = ?",
-      [email]
-    );
-
-    if (existingUser.length > 0) {
-      return res.status(400).json({ 
-        msg: "Email already registered" 
-      });
+   
+    if (role === "karyawan") {
+      if (!company_id || !birth_place || !birth_date || !gender) {
+        return res.status(400).json({ 
+          msg: "Karyawan harus mengisi tempat lahir, tanggal lahir, gender, dan pilih perusahaan" 
+        });
+      }
     }
 
-    // Hash password
+    
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Insert user baru
-    const result = await executeQuery(
-      `INSERT INTO users (name, email, password, role, company_id, phone, created_at) 
-       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [name, email, hashedPassword, role, companyId || null, phone || null]
-    );
+   
+    const [userResult] = await db.query(`
+      INSERT INTO users (
+        name, nik, password, role, 
+        birth_place, birth_date, gender, 
+        company_id, profile_photo_url, is_verified
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      name, 
+      nik, 
+      hashedPassword, 
+      role,
+      birth_place || null, 
+      birth_date || null, 
+      gender || null,
+      finalCompanyId,
+      profile_photo_url || null,
+      role === "hr" ? 1 : 0 
+    ]);
 
-    // Generate token
-    const token = generateToken(result.insertId, role);
+    console.log(`✅ User ${role} berhasil dibuat dengan ID:`, userResult.insertId);
 
-    console.log(`✅ New user registered: ${email}`);
-
-    res.status(201).json({
-      msg: "User registered successfully",
-      token,
-      user: {
-        id: result.insertId,
-        name,
-        email,
-        role,
-        companyId: companyId || null,
-      },
+    res.status(201).json({ 
+      msg: role === "hr" 
+        ? "HR dan perusahaan berhasil dibuat!" 
+        : "Registrasi karyawan berhasil! Tunggu verifikasi dari HR.",
+      userId: userResult.insertId,
+      companyId: finalCompanyId
     });
+
   } catch (error) {
     console.error("❌ Error register:", error);
-    res.status(500).json({ 
-      msg: "Server error during registration",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    
+  
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ msg: "NIK sudah terdaftar" });
+    }
+    
+    res.status(500).json({ msg: "Server error: " + error.message });
   }
 };
 
-// 🔹 Login User
 export const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { nik, password } = req.body;
 
-    // Validasi input
-    if (!email || !password) {
-      return res.status(400).json({ 
-        msg: "Email and password are required" 
-      });
+    if (!nik || !password) {
+      return res.status(400).json({ msg: "NIK dan password wajib diisi" });
     }
 
-    console.log(`🔐 Login attempt for: ${email}`);
-
-    // Cari user berdasarkan email dengan retry logic
-    const users = await executeQuery(
-      "SELECT * FROM users WHERE email = ?",
-      [email]
-    );
+  
+    const [users] = await db.query(`
+      SELECT 
+        u.id,
+        u.name,
+        u.nik,
+        u.role,
+        u.birth_place,
+        u.birth_date,
+        u.gender,
+        u.profile_photo_url,
+        u.company_id,
+        u.is_verified,
+        u.password,
+        c.name as company_name,
+        ST_X(c.location) AS company_lon,
+        ST_Y(c.location) AS company_lat,
+        c.valid_radius_m
+      FROM users u
+      LEFT JOIN companies c ON u.company_id = c.id
+      WHERE u.nik = ?
+    `, [nik]);
 
     if (users.length === 0) {
-      console.log(`❌ Login failed: User not found - ${email}`);
-      return res.status(401).json({ 
-        msg: "Invalid email or password" 
-      });
+      return res.status(401).json({ msg: "NIK atau password salah" });
     }
 
     const user = users[0];
 
-    // Verifikasi password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    
-    if (!isPasswordValid) {
-      console.log(`❌ Login failed: Invalid password - ${email}`);
-      return res.status(401).json({ 
-        msg: "Invalid email or password" 
-      });
+  
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ msg: "NIK atau password salah" });
     }
 
-    // Update last login
-    await executeQuery(
-      "UPDATE users SET last_login = NOW() WHERE id = ?",
-      [user.id]
-    ).catch(err => console.error("Failed to update last_login:", err));
 
-    // Generate token
-    const token = generateToken(user.id, user.role);
+    if (user.role !== "super_admin" && !user.is_verified) {
+      return res.status(403).json({ msg: "Akun Anda belum diverifikasi oleh HR" });
+    }
 
-    console.log(`✅ Login successful: ${email}`);
+  
+    const token = jwt.sign(
+      { 
+        id: user.id, 
+        role: user.role, 
+        company_id: user.company_id 
+      },
+      process.env.JWT_SECRET || "your_secret_key_here",
+      { expiresIn: "30d" }
+    );
+
+    
+    const { password: _, ...userWithoutPassword } = user;
+
+    console.log("✅ Login berhasil:", { id: user.id, name: user.name, role: user.role });
 
     res.json({
-      msg: "Login successful",
+      msg: "Login berhasil",
       token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        companyId: user.company_id,
-        phone: user.phone,
-      },
+      user: userWithoutPassword
     });
+
   } catch (error) {
     console.error("❌ Error login:", error);
-    
-    // Handle specific database errors
-    if (error.code === 'PROTOCOL_CONNECTION_LOST') {
-      return res.status(503).json({ 
-        msg: "Database connection lost. Please try again." 
-      });
-    }
-    
-    res.status(500).json({ 
-      msg: "Server error during login",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    res.status(500).json({ msg: "Server error: " + error.message });
   }
-};
-
-// 🔹 Get Current User Profile
-export const getProfile = async (req, res) => {
-  try {
-    const userId = req.userId; // dari middleware auth
-
-    const users = await executeQuery(
-      `SELECT id, name, email, role, company_id, phone, profile_picture, created_at, last_login 
-       FROM users WHERE id = ?`,
-      [userId]
-    );
-
-    if (users.length === 0) {
-      return res.status(404).json({ 
-        msg: "User not found" 
-      });
-    }
-
-    res.json({
-      msg: "Profile fetched successfully",
-      user: users[0],
-    });
-  } catch (error) {
-    console.error("❌ Error get profile:", error);
-    res.status(500).json({ 
-      msg: "Server error fetching profile",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
-
-// 🔹 Update User Profile
-export const updateProfile = async (req, res) => {
-  try {
-    const userId = req.userId;
-    const { name, phone, profilePicture } = req.body;
-
-    const updates = [];
-    const values = [];
-
-    if (name) {
-      updates.push("name = ?");
-      values.push(name);
-    }
-    if (phone) {
-      updates.push("phone = ?");
-      values.push(phone);
-    }
-    if (profilePicture) {
-      updates.push("profile_picture = ?");
-      values.push(profilePicture);
-    }
-
-    if (updates.length === 0) {
-      return res.status(400).json({ 
-        msg: "No fields to update" 
-      });
-    }
-
-    values.push(userId);
-
-    await executeQuery(
-      `UPDATE users SET ${updates.join(", ")}, updated_at = NOW() WHERE id = ?`,
-      values
-    );
-
-    // Fetch updated user
-    const users = await executeQuery(
-      "SELECT id, name, email, role, company_id, phone, profile_picture FROM users WHERE id = ?",
-      [userId]
-    );
-
-    console.log(`✅ Profile updated for user ID: ${userId}`);
-
-    res.json({
-      msg: "Profile updated successfully",
-      user: users[0],
-    });
-  } catch (error) {
-    console.error("❌ Error update profile:", error);
-    res.status(500).json({ 
-      msg: "Server error updating profile",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
-
-// 🔹 Change Password
-export const changePassword = async (req, res) => {
-  try {
-    const userId = req.userId;
-    const { oldPassword, newPassword } = req.body;
-
-    if (!oldPassword || !newPassword) {
-      return res.status(400).json({ 
-        msg: "Old password and new password are required" 
-      });
-    }
-
-    if (newPassword.length < 6) {
-      return res.status(400).json({ 
-        msg: "New password must be at least 6 characters" 
-      });
-    }
-
-    // Get current password
-    const users = await executeQuery(
-      "SELECT password FROM users WHERE id = ?",
-      [userId]
-    );
-
-    if (users.length === 0) {
-      return res.status(404).json({ 
-        msg: "User not found" 
-      });
-    }
-
-    // Verify old password
-    const isPasswordValid = await bcrypt.compare(oldPassword, users[0].password);
-    
-    if (!isPasswordValid) {
-      return res.status(401).json({ 
-        msg: "Old password is incorrect" 
-      });
-    }
-
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    // Update password
-    await executeQuery(
-      "UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?",
-      [hashedPassword, userId]
-    );
-
-    console.log(`✅ Password changed for user ID: ${userId}`);
-
-    res.json({
-      msg: "Password changed successfully",
-    });
-  } catch (error) {
-    console.error("❌ Error change password:", error);
-    res.status(500).json({ 
-      msg: "Server error changing password",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
-
-export default {
-  register,
-  login,
-  getProfile,
-  updateProfile,
-  changePassword,
 };

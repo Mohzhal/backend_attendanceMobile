@@ -1,7 +1,9 @@
-import { executeQuery } from "../config/db.js";
+import { db } from "../config/db.js";
+
 
 export const getApplicantsByCompany = async (req, res) => {
   try {
+   
     const hrCompanyId = req.user.company_id;
     const hrRole = req.user.role;
 
@@ -12,12 +14,14 @@ export const getApplicantsByCompany = async (req, res) => {
       hrRole,
     });
 
+    
     if (hrRole !== "hr" && hrRole !== "super_admin") {
       return res.status(403).json({ 
         msg: "Hanya HR atau Super Admin yang dapat mengakses halaman ini" 
       });
     }
 
+   
     if (!hrCompanyId && hrRole === "hr") {
       return res.status(403).json({ 
         msg: "HR tidak memiliki company_id yang valid" 
@@ -45,6 +49,7 @@ export const getApplicantsByCompany = async (req, res) => {
 
     const params = [];
 
+    
     if (hrRole === "hr") {
       query += ` AND u.company_id = ?`;
       params.push(hrCompanyId);
@@ -55,10 +60,11 @@ export const getApplicantsByCompany = async (req, res) => {
     console.log("📝 SQL Query:", query);
     console.log("📝 Params:", params);
 
-    const rows = await executeQuery(query, params);
+    const [rows] = await db.query(query, params);
 
     console.log("✅ Found applicants:", rows.length);
 
+   
     const formattedRows = rows.map(row => ({
       id: row.id,
       name: row.name,
@@ -79,15 +85,16 @@ export const getApplicantsByCompany = async (req, res) => {
     console.error("❌ Get applicants error:", error);
     return res.status(500).json({ 
       msg: "Terjadi kesalahan server", 
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+      error: error.message 
     });
   }
 };
 
+
 export const verifyApplicant = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status } = req.body; 
     const hrCompanyId = req.user.company_id;
     const hrRole = req.user.role;
 
@@ -99,13 +106,15 @@ export const verifyApplicant = async (req, res) => {
       hrId: req.user.id,
     });
 
+  
     if (!status || (status !== "approved" && status !== "rejected")) {
       return res.status(400).json({ 
         msg: "Status harus 'approved' atau 'rejected'" 
       });
     }
 
-    const rows = await executeQuery(
+  
+    const [rows] = await db.query(
       `SELECT u.id, u.name, u.company_id, u.role, u.is_verified, c.name as company_name
        FROM users u
        LEFT JOIN companies c ON u.company_id = c.id
@@ -121,12 +130,14 @@ export const verifyApplicant = async (req, res) => {
 
     console.log("👤 Applicant data:", applicant);
 
+   
     if (applicant.role !== "karyawan") {
       return res.status(400).json({ 
         msg: "Hanya karyawan yang dapat diverifikasi" 
       });
     }
 
+   
     if (hrRole === "hr") {
       if (!applicant.company_id) {
         return res.status(400).json({ 
@@ -142,9 +153,10 @@ export const verifyApplicant = async (req, res) => {
       }
     }
 
+   
     const isVerified = status === "approved" ? 1 : 0;
 
-    await executeQuery(
+    await db.query(
       `UPDATE users SET is_verified = ? WHERE id = ?`,
       [isVerified, id]
     );
@@ -165,10 +177,11 @@ export const verifyApplicant = async (req, res) => {
     console.error("❌ Verification error:", error);
     return res.status(500).json({ 
       msg: "Terjadi kesalahan saat memproses verifikasi", 
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+      error: error.message 
     });
   }
 };
+
 
 export const getVerifiedEmployees = async (req, res) => {
   try {
@@ -202,7 +215,7 @@ export const getVerifiedEmployees = async (req, res) => {
 
     query += ` ORDER BY u.name ASC`;
 
-    const rows = await executeQuery(query, params);
+    const [rows] = await db.query(query, params);
 
     return res.status(200).json(rows);
 
@@ -210,7 +223,7 @@ export const getVerifiedEmployees = async (req, res) => {
     console.error("❌ Get verified employees error:", error);
     return res.status(500).json({ 
       msg: "Terjadi kesalahan server", 
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+      error: error.message 
     });
   }
 };
