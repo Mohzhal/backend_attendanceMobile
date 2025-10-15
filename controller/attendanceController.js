@@ -22,7 +22,6 @@ export const getAttendance = async (req, res) => {
   }
 };
 
-
 export const createAttendance = async (req, res) => {
   try {
     const { type, lat_backup, lon_backup } = req.body;
@@ -33,7 +32,7 @@ export const createAttendance = async (req, res) => {
     console.log("Type:", type);
     console.log("Backup Location:", { lat: lat_backup, lon: lon_backup });
 
-   
+    // ✅ VALIDASI 1: Tipe absensi
     if (!type || !["checkin", "checkout"].includes(type)) {
       return res.status(400).json({ msg: "Type harus 'checkin' atau 'checkout'" });
     }
@@ -42,7 +41,61 @@ export const createAttendance = async (req, res) => {
       return res.status(400).json({ msg: "Foto wajib diupload" });
     }
 
-   
+    // ✅ VALIDASI 2: Cek apakah sudah check-in hari ini (untuk checkout)
+    if (type === "checkout") {
+      const today = new Date().toISOString().split('T')[0];
+      const [checkinToday] = await db.query(
+        `SELECT id FROM attendance 
+         WHERE user_id = ? 
+         AND type = 'checkin' 
+         AND DATE(created_at) = ?`,
+        [user_id, today]
+      );
+
+      if (checkinToday.length === 0) {
+        return res.status(400).json({ 
+          msg: "Anda harus melakukan check-in terlebih dahulu sebelum check-out.",
+          error: "CHECKIN_REQUIRED"
+        });
+      }
+
+      // ✅ VALIDASI 3: Cek apakah sudah checkout hari ini
+      const [checkoutToday] = await db.query(
+        `SELECT id FROM attendance 
+         WHERE user_id = ? 
+         AND type = 'checkout' 
+         AND DATE(created_at) = ?`,
+        [user_id, today]
+      );
+
+      if (checkoutToday.length > 0) {
+        return res.status(400).json({ 
+          msg: "Anda sudah melakukan check-out hari ini.",
+          error: "ALREADY_CHECKOUT"
+        });
+      }
+    }
+
+    // ✅ VALIDASI 4: Cek duplikasi check-in
+    if (type === "checkin") {
+      const today = new Date().toISOString().split('T')[0];
+      const [checkinToday] = await db.query(
+        `SELECT id FROM attendance 
+         WHERE user_id = ? 
+         AND type = 'checkin' 
+         AND DATE(created_at) = ?`,
+        [user_id, today]
+      );
+
+      if (checkinToday.length > 0) {
+        return res.status(400).json({ 
+          msg: "Anda sudah melakukan check-in hari ini.",
+          error: "ALREADY_CHECKIN"
+        });
+      }
+    }
+
+    // Get company
     const [userRows] = await db.query(
       "SELECT company_id FROM users WHERE id = ?",
       [user_id]
@@ -60,7 +113,7 @@ export const createAttendance = async (req, res) => {
 
     console.log("✅ Company ID:", company_id);
 
-    
+    // Parse EXIF
     const exifr = (await import("exifr")).default;
     let lat = null;
     let lon = null;
@@ -78,7 +131,7 @@ export const createAttendance = async (req, res) => {
       console.warn("⚠️ EXIF parsing error:", exifError.message);
     }
 
-  
+    // Use backup GPS
     if (!lat || !lon) {
       if (!lat_backup || !lon_backup) {
         return res.status(400).json({
@@ -90,14 +143,14 @@ export const createAttendance = async (req, res) => {
       console.log("📍 Lokasi dari GPS backup:", { lat, lon });
     }
 
-   
+    // Validasi koordinat
     if (isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
       return res.status(400).json({ 
         msg: "Koordinat lokasi tidak valid. Pastikan GPS aktif dan izin lokasi diberikan." 
       });
     }
 
-   
+    // Validasi Indonesia
     if (lat < -11 || lat > 6 || lon < 95 || lon > 141) {
       return res.status(400).json({ 
         msg: "Koordinat berada di luar Indonesia. Periksa pengaturan GPS.",
@@ -107,11 +160,11 @@ export const createAttendance = async (req, res) => {
 
     console.log("✅ Final User Location:", { lat, lon });
 
-   
+    // Get company location
     const [companyRows] = await db.query(
       `SELECT 
-         ST_Y(location) AS company_lon,  -- Baca Y sebagai longitude (karena DB terbalik)
-         ST_X(location) AS company_lat,  -- Baca X sebagai latitude (karena DB terbalik)
+         ST_Y(location) AS company_lon,
+         ST_X(location) AS company_lat,
          valid_radius_m,
          name
        FROM companies 
@@ -132,7 +185,7 @@ export const createAttendance = async (req, res) => {
       radius: company.valid_radius_m
     });
 
-   
+    // Validasi koordinat perusahaan
     if (!company.company_lat || !company.company_lon || 
         isNaN(company.company_lat) || isNaN(company.company_lon) ||
         Math.abs(company.company_lat) < 0.0001 || Math.abs(company.company_lon) < 0.0001) {
@@ -146,7 +199,6 @@ export const createAttendance = async (req, res) => {
       });
     }
 
-   
     if (company.company_lat < -11 || company.company_lat > 6 || 
         company.company_lon < 95 || company.company_lon > 141) {
       console.error("❌ Koordinat perusahaan di luar Indonesia:", company);
@@ -160,12 +212,11 @@ export const createAttendance = async (req, res) => {
       });
     }
 
-    
     const photo_url = `/uploads/absensi/${req.file.filename}`;
 
     console.log("💾 Saving attendance to database...");
 
-    
+    // Insert attendance
     await db.query(
       `INSERT INTO attendance 
        (user_id, company_id, type, photo_url, location, latitude, longitude)
@@ -173,7 +224,7 @@ export const createAttendance = async (req, res) => {
       [user_id, company_id, type, photo_url, lon, lat, lat, lon]
     );
 
- 
+    // Get last inserted
     const [last] = await db.query(
       `SELECT id FROM attendance WHERE user_id = ? ORDER BY id DESC LIMIT 1`,
       [user_id]
@@ -182,6 +233,7 @@ export const createAttendance = async (req, res) => {
 
     console.log("✅ Attendance saved with ID:", attendance.id);
 
+    // Calculate distance
     const [distanceRows] = await db.query(
       `SELECT 
          ST_Distance_Sphere(a.location, c.location) AS distance_m, 
@@ -198,7 +250,7 @@ export const createAttendance = async (req, res) => {
     console.log("📏 Distance:", distance_m, "m");
     console.log("✅ Is Valid:", is_valid);
 
-  
+    // Update distance
     await db.query(
       `UPDATE attendance SET distance_m = ?, is_valid = ? WHERE id = ?`,
       [distance_m, is_valid, attendance.id]
@@ -208,17 +260,18 @@ export const createAttendance = async (req, res) => {
 
     const response = {
       msg: is_valid
-        ? `Absensi berhasil disimpan ✅ (Jarak: ${distance_m}m)`
-        : `Absensi tercatat ⚠️ (${distance_m}m dari kantor, melebihi radius ${distanceRows[0].valid_radius_m}m)`,
+        ? `${type === 'checkin' ? 'Check-in' : 'Check-out'} berhasil ✅ (Jarak: ${distance_m}m)`
+        : `${type === 'checkin' ? 'Check-in' : 'Check-out'} tercatat ⚠️ (${distance_m}m dari kantor, melebihi radius ${distanceRows[0].valid_radius_m}m)`,
       distance_m,
       is_valid,
+      type,
       location: { 
-        latitude: parseFloat(lat),      
-        longitude: parseFloat(lon)      
+        latitude: parseFloat(lat),
+        longitude: parseFloat(lon)
       },
       company_location: { 
-        latitude: parseFloat(company.company_lat),   
-        longitude: parseFloat(company.company_lon)   
+        latitude: parseFloat(company.company_lat),
+        longitude: parseFloat(company.company_lon)
       },
       photo_url,
     };
@@ -231,7 +284,6 @@ export const createAttendance = async (req, res) => {
     res.status(500).json({ msg: "Server error", error: error.message });
   }
 };
-
 
 export const getAttendanceHistoryById = async (req, res) => {
   try {
@@ -284,7 +336,6 @@ export const getAttendanceHistoryById = async (req, res) => {
     res.status(500).json({ msg: "Server error", error: error.message });
   }
 };
-
 
 export const getTodayAttendanceById = async (req, res) => {
   try {
@@ -343,7 +394,6 @@ export const getTodayAttendanceById = async (req, res) => {
   }
 };
 
-
 export const getCompanyAttendance = async (req, res) => {
   try {
     const { company_id } = req.params;
@@ -351,7 +401,6 @@ export const getCompanyAttendance = async (req, res) => {
 
     console.log("📊 Fetching company attendance:", { company_id, period });
 
-   
     let dateFilter = "";
     if (period === "today") {
       dateFilter = "AND DATE(a.created_at) = CURDATE()";
@@ -361,7 +410,6 @@ export const getCompanyAttendance = async (req, res) => {
       dateFilter = "AND MONTH(a.created_at) = MONTH(CURDATE()) AND YEAR(a.created_at) = YEAR(CURDATE())";
     }
 
-    
     const [rows] = await db.query(
       `SELECT 
         a.id,
@@ -395,7 +443,6 @@ export const getCompanyAttendance = async (req, res) => {
       return res.json([]);
     }
 
- 
     const result = rows.map(item => ({
       id: item.id,
       user_id: item.user_id,
