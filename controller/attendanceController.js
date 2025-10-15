@@ -1,10 +1,10 @@
-import { db } from "../config/db.js";
+import { executeQuery } from "../config/db.js";
 
 export const getAttendance = async (req, res) => {
   try {
     const user_id = req.user.id;
 
-    const [rows] = await db.query(
+    const rows = await executeQuery(
       `SELECT a.id, a.user_id, a.company_id, a.type, a.photo_url,
               a.latitude, a.longitude, a.distance_m, a.is_valid, 
               a.created_at, c.name AS company_name
@@ -18,10 +18,12 @@ export const getAttendance = async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error("❌ Get attendance error:", error);
-    res.status(500).json({ msg: "Server error", error: error.message });
+    res.status(500).json({ 
+      msg: "Server error", 
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    });
   }
 };
-
 
 export const createAttendance = async (req, res) => {
   try {
@@ -33,7 +35,6 @@ export const createAttendance = async (req, res) => {
     console.log("Type:", type);
     console.log("Backup Location:", { lat: lat_backup, lon: lon_backup });
 
-   
     if (!type || !["checkin", "checkout"].includes(type)) {
       return res.status(400).json({ msg: "Type harus 'checkin' atau 'checkout'" });
     }
@@ -42,8 +43,8 @@ export const createAttendance = async (req, res) => {
       return res.status(400).json({ msg: "Foto wajib diupload" });
     }
 
-   
-    const [userRows] = await db.query(
+    // Get user company
+    const userRows = await executeQuery(
       "SELECT company_id FROM users WHERE id = ?",
       [user_id]
     );
@@ -60,7 +61,7 @@ export const createAttendance = async (req, res) => {
 
     console.log("✅ Company ID:", company_id);
 
-    
+    // Extract GPS from EXIF
     const exifr = (await import("exifr")).default;
     let lat = null;
     let lon = null;
@@ -78,7 +79,7 @@ export const createAttendance = async (req, res) => {
       console.warn("⚠️ EXIF parsing error:", exifError.message);
     }
 
-  
+    // Use backup location if EXIF failed
     if (!lat || !lon) {
       if (!lat_backup || !lon_backup) {
         return res.status(400).json({
@@ -90,14 +91,14 @@ export const createAttendance = async (req, res) => {
       console.log("📍 Lokasi dari GPS backup:", { lat, lon });
     }
 
-   
+    // Validate coordinates
     if (isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
       return res.status(400).json({ 
         msg: "Koordinat lokasi tidak valid. Pastikan GPS aktif dan izin lokasi diberikan." 
       });
     }
 
-   
+    // Validate Indonesia bounds
     if (lat < -11 || lat > 6 || lon < 95 || lon > 141) {
       return res.status(400).json({ 
         msg: "Koordinat berada di luar Indonesia. Periksa pengaturan GPS.",
@@ -107,11 +108,11 @@ export const createAttendance = async (req, res) => {
 
     console.log("✅ Final User Location:", { lat, lon });
 
-   
-    const [companyRows] = await db.query(
+    // Get company location
+    const companyRows = await executeQuery(
       `SELECT 
-         ST_Y(location) AS company_lon,  -- Baca Y sebagai longitude (karena DB terbalik)
-         ST_X(location) AS company_lat,  -- Baca X sebagai latitude (karena DB terbalik)
+         ST_Y(location) AS company_lon,
+         ST_X(location) AS company_lat,
          valid_radius_m,
          name
        FROM companies 
@@ -132,7 +133,7 @@ export const createAttendance = async (req, res) => {
       radius: company.valid_radius_m
     });
 
-   
+    // Validate company coordinates
     if (!company.company_lat || !company.company_lon || 
         isNaN(company.company_lat) || isNaN(company.company_lon) ||
         Math.abs(company.company_lat) < 0.0001 || Math.abs(company.company_lon) < 0.0001) {
@@ -146,7 +147,6 @@ export const createAttendance = async (req, res) => {
       });
     }
 
-   
     if (company.company_lat < -11 || company.company_lat > 6 || 
         company.company_lon < 95 || company.company_lon > 141) {
       console.error("❌ Koordinat perusahaan di luar Indonesia:", company);
@@ -160,21 +160,20 @@ export const createAttendance = async (req, res) => {
       });
     }
 
-    
     const photo_url = `/uploads/absensi/${req.file.filename}`;
 
     console.log("💾 Saving attendance to database...");
 
-    
-    await db.query(
+    // Insert attendance
+    await executeQuery(
       `INSERT INTO attendance 
        (user_id, company_id, type, photo_url, location, latitude, longitude)
        VALUES (?, ?, ?, ?, ST_SRID(Point(?, ?), 4326), ?, ?)`,
       [user_id, company_id, type, photo_url, lon, lat, lat, lon]
     );
 
- 
-    const [last] = await db.query(
+    // Get last inserted ID
+    const last = await executeQuery(
       `SELECT id FROM attendance WHERE user_id = ? ORDER BY id DESC LIMIT 1`,
       [user_id]
     );
@@ -182,7 +181,8 @@ export const createAttendance = async (req, res) => {
 
     console.log("✅ Attendance saved with ID:", attendance.id);
 
-    const [distanceRows] = await db.query(
+    // Calculate distance
+    const distanceRows = await executeQuery(
       `SELECT 
          ST_Distance_Sphere(a.location, c.location) AS distance_m, 
          c.valid_radius_m
@@ -198,8 +198,8 @@ export const createAttendance = async (req, res) => {
     console.log("📏 Distance:", distance_m, "m");
     console.log("✅ Is Valid:", is_valid);
 
-  
-    await db.query(
+    // Update distance and validation
+    await executeQuery(
       `UPDATE attendance SET distance_m = ?, is_valid = ? WHERE id = ?`,
       [distance_m, is_valid, attendance.id]
     );
@@ -228,15 +228,18 @@ export const createAttendance = async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error("❌ Attendance error:", error);
-    res.status(500).json({ msg: "Server error", error: error.message });
+    res.status(500).json({ 
+      msg: "Server error", 
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    });
   }
 };
-
 
 export const getAttendanceHistoryById = async (req, res) => {
   try {
     const { id } = req.params;
-    const [rows] = await db.query(
+    
+    const rows = await executeQuery(
       `SELECT 
          a.id, a.type, a.latitude, a.longitude, a.distance_m, a.is_valid,
          DATE_FORMAT(a.created_at, '%Y-%m-%d') AS date,
@@ -281,17 +284,19 @@ export const getAttendanceHistoryById = async (req, res) => {
     res.json(Object.values(grouped));
   } catch (error) {
     console.error("❌ Get attendance history error:", error);
-    res.status(500).json({ msg: "Server error", error: error.message });
+    res.status(500).json({ 
+      msg: "Server error", 
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    });
   }
 };
-
 
 export const getTodayAttendanceById = async (req, res) => {
   try {
     const { id } = req.params;
     const today = new Date().toISOString().split("T")[0];
 
-    const [rows] = await db.query(
+    const rows = await executeQuery(
       `SELECT a.type, a.latitude, a.longitude, a.distance_m, a.is_valid,
               DATE_FORMAT(a.created_at, '%H:%i:%s') AS time, 
               c.name AS company_name,
@@ -339,10 +344,12 @@ export const getTodayAttendanceById = async (req, res) => {
     res.json(data);
   } catch (error) {
     console.error("❌ Get today attendance error:", error);
-    res.status(500).json({ msg: "Server error", error: error.message });
+    res.status(500).json({ 
+      msg: "Server error", 
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    });
   }
 };
-
 
 export const getCompanyAttendance = async (req, res) => {
   try {
@@ -351,7 +358,6 @@ export const getCompanyAttendance = async (req, res) => {
 
     console.log("📊 Fetching company attendance:", { company_id, period });
 
-   
     let dateFilter = "";
     if (period === "today") {
       dateFilter = "AND DATE(a.created_at) = CURDATE()";
@@ -361,8 +367,7 @@ export const getCompanyAttendance = async (req, res) => {
       dateFilter = "AND MONTH(a.created_at) = MONTH(CURDATE()) AND YEAR(a.created_at) = YEAR(CURDATE())";
     }
 
-    
-    const [rows] = await db.query(
+    const rows = await executeQuery(
       `SELECT 
         a.id,
         a.user_id,
@@ -395,7 +400,6 @@ export const getCompanyAttendance = async (req, res) => {
       return res.json([]);
     }
 
- 
     const result = rows.map(item => ({
       id: item.id,
       user_id: item.user_id,
@@ -415,7 +419,10 @@ export const getCompanyAttendance = async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error("❌ Get company attendance error:", error);
-    res.status(500).json({ msg: "Server error", error: error.message });
+    res.status(500).json({ 
+      msg: "Server error", 
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    });
   }
 };
 
@@ -428,7 +435,7 @@ export const validateAttendance = async (req, res) => {
       return res.status(400).json({ msg: "is_valid harus berupa boolean" });
     }
 
-    await db.query(
+    await executeQuery(
       `UPDATE attendance SET is_valid = ? WHERE id = ?`, 
       [is_valid, id]
     );
@@ -441,6 +448,9 @@ export const validateAttendance = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Validate attendance error:", error);
-    res.status(500).json({ msg: "Server error", error: error.message });
+    res.status(500).json({ 
+      msg: "Server error", 
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    });
   }
 };

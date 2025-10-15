@@ -4,9 +4,13 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev" : "nodemon server.js"
   },
-  "keywords": [],
+  "keywords": ["attendance",
+    "api",
+    "express",
+    "mysql"],
   "author": "",
   "license": "ISC",
   "type": "module",
