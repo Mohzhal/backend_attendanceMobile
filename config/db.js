@@ -10,18 +10,17 @@ const poolConfig = {
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
+  // Pool settings
   waitForConnections: true,
   connectionLimit: 10,
   maxIdle: 10,
   idleTimeout: 60000,
   queueLimit: 0,
+  // Connection settings
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,
-  // Timeout settings untuk Railway
   connectTimeout: 60000,
-  acquireTimeout: 60000,
-  timeout: 60000,
-  // Tambahan untuk stability
+  // Additional stability settings
   multipleStatements: false,
   dateStrings: true,
 };
