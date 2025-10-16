@@ -3,7 +3,6 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
-
 import {
   createAttendance,
   getAttendance,
@@ -20,12 +19,10 @@ const __dirname = path.dirname(__filename);
 
 const uploadDir = path.join(process.cwd(), "uploads", "absensi");
 
-
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
   console.log(`📁 Folder created: ${uploadDir}`);
 }
-
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -36,7 +33,6 @@ const storage = multer.diskStorage({
   },
 });
 
-
 const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
@@ -46,7 +42,6 @@ const upload = multer({
     else cb(new Error("Format file tidak didukung. Hanya JPG/PNG."), false);
   },
 });
-
 
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
@@ -62,17 +57,13 @@ const handleUploadError = (err, req, res, next) => {
   next();
 };
 
-
 router.get("/", authenticate, getAttendance);
 
-
 router.post("/", authenticate, upload.single("photo"), handleUploadError, createAttendance);
-
 
 router.get("/history/:id", authenticate, getAttendanceHistoryById);
 
 router.get("/history/today/:id", authenticate, getTodayAttendanceById);
-
 
 router.get("/company/:company_id", authenticate, getCompanyAttendance);
 
